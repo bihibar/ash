@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ash</title>
+    <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="preview-pane">
+        <header class="app-header">
+          <div class="brand">
+            <img class="brand-logo" src="./ash-logo.svg" alt="ash logo" />
+            <div>
+              <h1>ash</h1>
+            </div>
+          </div>
+          <div class="actions">
+            <button id="copySvg" class="primary-action" type="button">Copy SVG</button>
+            <details class="export-menu">
+              <summary>Export</summary>
+              <div class="export-popover">
+                <button id="copyPng" type="button">Copy PNG</button>
+                <button id="saveSvg" type="button">Save SVG</button>
+                <button id="savePng" type="button">Save PNG</button>
+                <button id="saveJpg" type="button">Save JPG</button>
+              </div>
+            </details>
+          </div>
+        </header>
+
+        <div class="preview-grid">
+          <section class="card output-card">
+            <div class="card-header">
+              <div>
+                <h2>Output</h2>
+                <p id="status" role="status" aria-live="polite">Ready.</p>
+              </div>
+              <span id="sampleCount" class="badge">0 samples</span>
+            </div>
+            <div id="outputFrame" class="output-frame">
+              <div class="canvas-shell">
+                <div id="svgMount"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <aside class="controls" aria-label="Pattern controls">
+        <div class="controls-header">
+          <div>
+            <p class="eyebrow">controls</p>
+            <h2>Adjust</h2>
+          </div>
+          <span class="status-dot" aria-hidden="true"></span>
+        </div>
+
+        <label class="upload-button">
+          <input id="imageInput" type="file" accept="image/*" />
+          Load Image
+        </label>
+
+        <section class="source-panel" aria-label="Source preview">
+          <div class="source-panel-header">
+            <span>Source</span>
+            <small>Alpha-aware</small>
+          </div>
+          <div class="source-frame">
+            <img id="sourcePreview" alt="Loaded source preview" />
+          </div>
+        </section>
+
+        <details class="control-group" open>
+          <summary>Pattern</summary>
+          <label for="mode">Mode</label>
+          <select id="mode">
+            <option value="dots">Dots</option>
+            <option value="rings">Ring dots</option>
+            <option value="squares">Squares</option>
+            <option value="rectangles">Rectangles</option>
+            <option value="triangles">Triangles</option>
+            <option value="diamonds">Diamonds</option>
+            <option value="ascii">ASCII</option>
+            <option value="hatch">Line hatch</option>
+            <option value="crosshatch">Cross hatch</option>
+            <option value="waves">Wave threads</option>
+          </select>
+
+          <label for="charset">ASCII charset</label>
+          <select id="charset">
+            <option value="dotted">Dotted - .,;:oO8@</option>
+            <option value="type">Typewriter - .:-=+*#%@</option>
+            <option value="binary">Binary - 001101</option>
+            <option value="minimal">Minimal - .:+#</option>
+            <option value="dense">Dense</option>
+          </select>
+        </details>
+
+        <details class="control-group" open>
+          <summary>Sampling</summary>
+          <div class="range-row">
+            <label for="resolution">Resolution</label>
+            <output id="resolutionValue"></output>
+          </div>
+          <input id="resolution" type="range" min="24" max="260" value="120" />
+
+          <div class="range-row">
+            <label for="brightness">Brightness</label>
+            <output id="brightnessValue"></output>
+          </div>
+          <input id="brightness" type="range" min="-100" max="100" value="0" />
+
+          <div class="range-row">
+            <label for="contrast">Contrast</label>
+            <output id="contrastValue"></output>
+          </div>
+          <input id="contrast" type="range" min="20" max="300" value="115" />
+
+          <div class="range-row">
+            <label for="gamma">Gamma</label>
+            <output id="gammaValue"></output>
+          </div>
+          <input id="gamma" type="range" min="35" max="240" value="100" />
+
+          <div class="range-row">
+            <label for="cutoff">Tone cutoff</label>
+            <output id="cutoffValue"></output>
+          </div>
+          <input id="cutoff" type="range" min="0" max="100" value="6" />
+
+          <div class="range-row">
+            <label for="alphaCutoff">Alpha cutoff</label>
+            <output id="alphaCutoffValue"></output>
+          </div>
+          <input id="alphaCutoff" type="range" min="0" max="100" value="4" />
+        </details>
+
+        <details class="control-group" open>
+          <summary>Geometry</summary>
+          <div class="range-row">
+            <label for="density">Size</label>
+            <output id="densityValue"></output>
+          </div>
+          <input id="density" type="range" min="20" max="190" value="98" />
+
+          <div class="range-row">
+            <label for="xScale">Width</label>
+            <output id="xScaleValue"></output>
+          </div>
+          <input id="xScale" type="range" min="25" max="220" value="100" />
+
+          <div class="range-row">
+            <label for="yScale">Height</label>
+            <output id="yScaleValue"></output>
+          </div>
+          <input id="yScale" type="range" min="25" max="220" value="100" />
+
+          <div class="range-row">
+            <label for="rotation">Rotation</label>
+            <output id="rotationValue"></output>
+          </div>
+          <input id="rotation" type="range" min="-180" max="180" value="0" />
+
+          <div class="range-row">
+            <label for="jitter">Jitter</label>
+            <output id="jitterValue"></output>
+          </div>
+          <input id="jitter" type="range" min="0" max="100" value="0" />
+
+          <div class="range-row">
+            <label for="roundness">Roundness</label>
+            <output id="roundnessValue"></output>
+          </div>
+          <input id="roundness" type="range" min="0" max="100" value="14" />
+        </details>
+
+        <details class="control-group" open>
+          <summary>Color</summary>
+          <div class="color-row">
+            <label for="inkColor">Ink</label>
+            <input id="inkColor" type="color" value="#f4f1de" />
+          </div>
+          <div class="color-row">
+            <label for="paperColor">Background</label>
+            <input id="paperColor" type="color" value="#09090b" />
+          </div>
+
+          <label class="check">
+            <input id="sampleColors" type="checkbox" />
+            Sample image colors
+          </label>
+          <label class="check">
+            <input id="invert" type="checkbox" />
+            Invert tones
+          </label>
+          <label class="check">
+            <input id="transparentPaper" type="checkbox" />
+            Transparent export background
+          </label>
+          <label class="check">
+            <input id="photoBackdrop" type="checkbox" />
+            Faint source backdrop
+          </label>
+        </details>
+      </aside>
+    </main>
+
+    <textarea id="clipboardBuffer" class="clipboard-buffer" aria-label="Copy buffer"></textarea>
+    <canvas id="sampler" hidden></canvas>
+    <script src="./app.js"></script>
+  </body>
+</html>
