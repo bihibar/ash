@@ -790,7 +790,7 @@ async function saveRaster(type, filename) {
   download(filename, URL.createObjectURL(blob));
 }
 
-async function pickH264Codec(width, height, fps) {
+async function pickH264Codec(width, height, fps, bitrate) {
   const candidates = [
     "avc1.640028", "avc1.4d0028", "avc1.42e01f",
     "avc1.640020", "avc1.4d401f", "avc1.42001f",
@@ -798,7 +798,7 @@ async function pickH264Codec(width, height, fps) {
   for (const codec of candidates) {
     try {
       const support = await VideoEncoder.isConfigSupported({
-        codec, width, height, bitrate: 8_000_000, framerate: fps,
+        codec, width, height, bitrate, framerate: fps,
       });
       if (support && support.supported) return codec;
     } catch (error) {
@@ -841,13 +841,17 @@ async function exportMp4() {
   }
 
   const fps = 30;
-  const maxDim = 1280;
+  const maxDim = 1920;
   const scale = Math.min(1, maxDim / Math.max(state.naturalWidth, state.naturalHeight));
   // H.264 requires even dimensions.
   const outW = Math.max(2, Math.round(state.naturalWidth * scale) & ~1);
   const outH = Math.max(2, Math.round(state.naturalHeight * scale) & ~1);
 
-  const codec = await pickH264Codec(outW, outH, fps);
+  // Scale bitrate with the frame size (ASCII edges are detail-heavy). ~8 Mbps at
+  // 720p, ~18 Mbps at 1080p, capped at 20 Mbps.
+  const bitrate = Math.min(20_000_000, Math.round(outW * outH * fps * 0.3));
+
+  const codec = await pickH264Codec(outW, outH, fps, bitrate);
   if (!codec) {
     setStatus("No supported H.264 configuration for this video size.");
     return;
@@ -871,7 +875,7 @@ async function exportMp4() {
       setStatus(`Encoder error: ${error.message}`);
     },
   });
-  encoder.configure({ codec, width: outW, height: outH, bitrate: 8_000_000, framerate: fps });
+  encoder.configure({ codec, width: outW, height: outH, bitrate, framerate: fps });
 
   const canvas = document.createElement("canvas");
   canvas.width = outW;
