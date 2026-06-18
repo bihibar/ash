@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ash</title>
+    <meta name="description" content="ash — turn images and video into ASCII and vector patterns, right in the browser." />
+    <meta name="theme-color" content="#0a0a0a" />
     <link rel="icon" type="image/png" href="./favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400..600&family=Geist:wght@400..600&display=swap" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -13,8 +18,9 @@
         <header class="app-header">
           <div class="brand">
             <img class="brand-logo" src="./ash-logo.svg" alt="ash logo" />
-            <div>
+            <div class="brand-text">
               <h1>ash</h1>
+              <p class="brand-sub">image &amp; video → ascii</p>
             </div>
           </div>
           <div class="actions">
@@ -45,6 +51,14 @@
               <div class="canvas-shell">
                 <div id="svgMount"></div>
                 <canvas id="outputCanvas" hidden></canvas>
+                <div id="playOverlay" class="play-overlay" aria-hidden="true" hidden>
+                  <span class="play-overlay-button">
+                    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                      <path d="M8 5v14l11-7z" fill="currentColor" />
+                    </svg>
+                  </span>
+                </div>
+                <div class="drop-hint" aria-hidden="true">Drop image or video</div>
               </div>
             </div>
           </section>
@@ -62,6 +76,10 @@
 
         <label class="upload-button">
           <input id="imageInput" type="file" accept="image/*,video/*" />
+          <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 15V3m0 0L8 7m4-4 4 4" />
+            <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+          </svg>
           Load Media
         </label>
 

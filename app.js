@@ -8,6 +8,7 @@ const controls = {
   svgMount: $("svgMount"),
   outputFrame: $("outputFrame"),
   outputCanvas: $("outputCanvas"),
+  playOverlay: $("playOverlay"),
   status: $("status"),
   sampleCount: $("sampleCount"),
   mode: $("mode"),
@@ -222,6 +223,7 @@ function loadImage(src) {
     showOutput("svg");
     controls.sourcePreview.src = src;
     render();
+    updatePlayOverlay();
   };
   image.src = src;
 }
@@ -263,6 +265,7 @@ async function onVideoReady() {
   await seekVideo(0);
   showOutput("svg");
   render();
+  updatePlayOverlay();
 }
 
 function seekVideo(time) {
@@ -295,6 +298,36 @@ function showOutput(kind) {
   const canvas = kind === "canvas";
   controls.svgMount.hidden = canvas;
   controls.outputCanvas.hidden = !canvas;
+}
+
+// Clicking (or pressing space on) the preview toggles playback for a video.
+function togglePlayback() {
+  if (state.sourceType !== "video" || state.exporting) return;
+  const video = controls.sourceVideo;
+  if (video.paused) video.play().catch(() => {});
+  else video.pause();
+}
+
+function updatePlayOverlay() {
+  const isVideo = state.sourceType === "video";
+  const showPlay = isVideo && controls.sourceVideo.paused && !state.exporting;
+  controls.playOverlay.hidden = !showPlay;
+  controls.outputFrame.classList.toggle("has-video", isVideo);
+}
+
+// Shared by the file input and drag-and-drop.
+function handleMediaFile(file) {
+  if (!file) return;
+  if (file.type.startsWith("video/")) {
+    loadVideo(URL.createObjectURL(file));
+  } else if (file.type.startsWith("image/")) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.imageUrl = reader.result;
+      loadImage(state.imageUrl);
+    };
+    reader.readAsDataURL(file);
+  }
 }
 
 // The preview canvas is sized to the source (capped) so the per-cell geometry,
@@ -861,6 +894,7 @@ async function exportMp4() {
   const wasPaused = video.paused;
   video.pause();
   setExportingUi(true);
+  updatePlayOverlay();
   setStatus("Preparing MP4 export…");
 
   const muxer = new Muxer({
@@ -928,6 +962,7 @@ async function exportMp4() {
     } else {
       video.play().catch(() => {});
     }
+    updatePlayOverlay();
   }
 }
 
@@ -944,23 +979,13 @@ function bindEvents() {
   });
 
   controls.imageInput.addEventListener("change", (event) => {
-    const [file] = event.target.files;
-    if (!file) return;
-    if (file.type.startsWith("video/")) {
-      loadVideo(URL.createObjectURL(file));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.imageUrl = reader.result;
-      loadImage(state.imageUrl);
-    };
-    reader.readAsDataURL(file);
+    handleMediaFile(event.target.files[0]);
   });
 
   // Playing -> smooth canvas loop. Pausing/scrubbing -> crisp SVG of that frame.
   controls.sourceVideo.addEventListener("play", () => {
     if (state.sourceType === "video" && !state.exporting) startPlaybackLoop();
+    updatePlayOverlay();
   });
   controls.sourceVideo.addEventListener("pause", () => {
     if (state.sourceType === "video" && !state.exporting) {
@@ -968,12 +993,42 @@ function bindEvents() {
       showOutput("svg");
       render();
     }
+    updatePlayOverlay();
   });
   controls.sourceVideo.addEventListener("seeked", () => {
     if (state.sourceType === "video" && !state.exporting && controls.sourceVideo.paused) {
       showOutput("svg");
       render();
     }
+  });
+
+  // Click the preview to play/pause; space does the same when not in a control.
+  controls.outputFrame.addEventListener("click", togglePlayback);
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" || state.sourceType !== "video") return;
+    if (event.target.closest("input, select, textarea, button, summary, [contenteditable]")) return;
+    event.preventDefault();
+    togglePlayback();
+  });
+
+  // Drag and drop media anywhere over the preview.
+  const dragArea = controls.outputFrame;
+  ["dragenter", "dragover"].forEach((type) => {
+    dragArea.addEventListener(type, (event) => {
+      event.preventDefault();
+      dragArea.classList.add("drag-over");
+    });
+  });
+  ["dragleave", "drop"].forEach((type) => {
+    dragArea.addEventListener(type, (event) => {
+      event.preventDefault();
+      if (type === "dragleave" && dragArea.contains(event.relatedTarget)) return;
+      dragArea.classList.remove("drag-over");
+    });
+  });
+  dragArea.addEventListener("drop", (event) => {
+    const file = event.dataTransfer && event.dataTransfer.files[0];
+    if (file) handleMediaFile(file);
   });
 
   controls.copySvg.addEventListener("click", () => copySvg().catch(() => setStatus("SVG copy failed.")));
