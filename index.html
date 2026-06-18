@@ -26,6 +26,7 @@
                 <button id="saveSvg" type="button">Save SVG</button>
                 <button id="savePng" type="button">Save PNG</button>
                 <button id="saveJpg" type="button">Save JPG</button>
+                <button id="saveMp4" type="button">Save MP4</button>
               </div>
             </details>
           </div>
@@ -43,6 +44,7 @@
             <div id="outputFrame" class="output-frame">
               <div class="canvas-shell">
                 <div id="svgMount"></div>
+                <canvas id="outputCanvas" hidden></canvas>
               </div>
             </div>
           </section>
@@ -59,8 +61,8 @@
         </div>
 
         <label class="upload-button">
-          <input id="imageInput" type="file" accept="image/*" />
-          Load Image
+          <input id="imageInput" type="file" accept="image/*,video/*" />
+          Load Media
         </label>
 
         <section class="source-panel" aria-label="Source preview">
@@ -70,6 +72,7 @@
           </div>
           <div class="source-frame">
             <img id="sourcePreview" alt="Loaded source preview" />
+            <video id="sourceVideo" muted loop playsinline controls hidden></video>
           </div>
         </section>
 

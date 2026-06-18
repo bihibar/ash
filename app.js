@@ -3,9 +3,11 @@ const $ = (id) => document.getElementById(id);
 const controls = {
   imageInput: $("imageInput"),
   sourcePreview: $("sourcePreview"),
+  sourceVideo: $("sourceVideo"),
   sampler: $("sampler"),
   svgMount: $("svgMount"),
   outputFrame: $("outputFrame"),
+  outputCanvas: $("outputCanvas"),
   status: $("status"),
   sampleCount: $("sampleCount"),
   mode: $("mode"),
@@ -33,6 +35,7 @@ const controls = {
   saveSvg: $("saveSvg"),
   savePng: $("savePng"),
   saveJpg: $("saveJpg"),
+  saveMp4: $("saveMp4"),
   exportMenu: document.querySelector(".export-menu"),
   clipboardBuffer: $("clipboardBuffer"),
 };
@@ -61,14 +64,25 @@ const charsets = {
 };
 
 const state = {
+  media: null,
+  sourceType: "image",
   image: null,
+  video: null,
   imageUrl: "",
+  videoObjectUrl: "",
   naturalWidth: 1280,
   naturalHeight: 780,
   cells: [],
   asciiText: "",
   svg: "",
+  exporting: false,
+  previewLoopActive: false,
 };
+
+const backdropCanvas = document.createElement("canvas");
+const TAU = Math.PI * 2;
+const DEG = Math.PI / 180;
+let outputCtx = null;
 
 function esc(value) {
   return String(value)
@@ -197,20 +211,157 @@ function createDemoImage() {
 function loadImage(src) {
   const image = new Image();
   image.onload = () => {
+    teardownVideo();
+    state.sourceType = "image";
+    state.media = image;
     state.image = image;
     state.naturalWidth = image.naturalWidth;
     state.naturalHeight = image.naturalHeight;
+    state.imageUrl = src;
+    showSource("image");
+    showOutput("svg");
     controls.sourcePreview.src = src;
     render();
   };
   image.src = src;
 }
 
+function showSource(type) {
+  const isVideo = type === "video";
+  controls.sourcePreview.hidden = isVideo;
+  controls.sourceVideo.hidden = !isVideo;
+}
+
+function teardownVideo() {
+  const video = controls.sourceVideo;
+  state.previewLoopActive = false;
+  if (!video.paused) video.pause();
+  if (state.videoObjectUrl) {
+    URL.revokeObjectURL(state.videoObjectUrl);
+    state.videoObjectUrl = "";
+  }
+}
+
+function loadVideo(url) {
+  teardownVideo();
+  const video = controls.sourceVideo;
+  state.videoObjectUrl = url;
+  video.src = url;
+  video.addEventListener("loadeddata", onVideoReady, { once: true });
+  video.load();
+}
+
+async function onVideoReady() {
+  const video = controls.sourceVideo;
+  state.sourceType = "video";
+  state.media = video;
+  state.video = video;
+  state.naturalWidth = video.videoWidth;
+  state.naturalHeight = video.videoHeight;
+  showSource("video");
+  sizeOutputCanvas();
+  await seekVideo(0);
+  showOutput("svg");
+  render();
+}
+
+function seekVideo(time) {
+  const video = controls.sourceVideo;
+  const max = Math.max(0, (video.duration || 0) - 0.001);
+  const target = Math.min(Math.max(0, time), max);
+  return new Promise((resolve) => {
+    if (video.readyState >= 2 && Math.abs(video.currentTime - target) < 1e-4) {
+      resolve();
+      return;
+    }
+    const cleanup = () => {
+      clearTimeout(timer);
+      video.removeEventListener("seeked", onSeeked);
+    };
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 3000);
+    video.addEventListener("seeked", onSeeked);
+    video.currentTime = target;
+  });
+}
+
+function showOutput(kind) {
+  const canvas = kind === "canvas";
+  controls.svgMount.hidden = canvas;
+  controls.outputCanvas.hidden = !canvas;
+}
+
+// The preview canvas is sized to the source (capped) so the per-cell geometry,
+// which is computed in source pixels, maps over with a single ctx.scale.
+function sizeOutputCanvas() {
+  const cap = 1280;
+  const scale = Math.min(1, cap / Math.max(state.naturalWidth, state.naturalHeight));
+  const w = Math.max(2, Math.round(state.naturalWidth * scale));
+  const h = Math.max(2, Math.round(state.naturalHeight * scale));
+  const canvas = controls.outputCanvas;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  outputCtx = canvas.getContext("2d");
+}
+
+function drawVideoPreviewFrame() {
+  const canvas = controls.outputCanvas;
+  const config = settings();
+  updateReadouts();
+  const grid = drawToCanvas(config, outputCtx, canvas.width, canvas.height);
+  controls.sampleCount.textContent = `${grid.visibleCount.toLocaleString()} marks`;
+}
+
+// Silky playback: draw straight to the canvas each presented frame instead of
+// rebuilding an SVG string + reparsing it through innerHTML. requestVideoFrameCallback
+// only fires for real frames, so the loop self-stops the moment the clip pauses.
+function startPlaybackLoop() {
+  const video = controls.sourceVideo;
+  if (state.previewLoopActive) return;
+  state.previewLoopActive = true;
+  showOutput("canvas");
+  const useRvfc = typeof video.requestVideoFrameCallback === "function";
+  const step = () => {
+    if (state.sourceType !== "video" || state.exporting || video.paused) {
+      state.previewLoopActive = false;
+      return;
+    }
+    drawVideoPreviewFrame();
+    if (useRvfc) video.requestVideoFrameCallback(step);
+    else requestAnimationFrame(step);
+  };
+  if (useRvfc) video.requestVideoFrameCallback(step);
+  else requestAnimationFrame(step);
+}
+
+// The faint source backdrop embeds a data URL in the SVG. For video that has to
+// be the current frame, so capture a downscaled snapshot on demand.
+function refreshVideoBackdrop(config) {
+  if (state.sourceType !== "video" || !config.photoBackdrop) return;
+  const maxDim = 640;
+  const scale = Math.min(1, maxDim / Math.max(state.naturalWidth, state.naturalHeight));
+  const w = Math.max(1, Math.round(state.naturalWidth * scale));
+  const h = Math.max(1, Math.round(state.naturalHeight * scale));
+  backdropCanvas.width = w;
+  backdropCanvas.height = h;
+  const ctx = backdropCanvas.getContext("2d");
+  ctx.drawImage(state.media, 0, 0, w, h);
+  state.imageUrl = backdropCanvas.toDataURL("image/jpeg", 0.6);
+}
+
 function sampleImage(config) {
-  const image = state.image;
+  const image = state.media;
   const canvas = controls.sampler;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const ratio = image.naturalHeight / image.naturalWidth;
+  const ratio = state.naturalHeight / state.naturalWidth;
   const columns = config.columns;
   const rows = Math.max(8, Math.round(columns * ratio * 0.56));
   const cellW = state.naturalWidth / columns;
@@ -355,6 +506,143 @@ function renderCell(cell, config) {
   return `<text x="${pos.x.toFixed(2)}" y="${pos.y.toFixed(2)}" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="${fontSize.toFixed(2)}" fill="${ink}" opacity="${opacity.toFixed(3)}" transform="rotate(${pos.rotation.toFixed(2)} ${pos.x.toFixed(2)} ${pos.y.toFixed(2)})">${esc(cell.char)}</text>`;
 }
 
+function strokeLineCanvas(ctx, x, y, length, angle, stroke) {
+  const radians = angle * DEG;
+  const dx = Math.cos(radians) * length * 0.5;
+  const dy = Math.sin(radians) * length * 0.5;
+  ctx.lineWidth = stroke;
+  ctx.beginPath();
+  ctx.moveTo(x - dx, y - dy);
+  ctx.lineTo(x + dx, y + dy);
+  ctx.stroke();
+}
+
+// Canvas twin of renderCell — same geometry, drawn instead of serialized so it
+// can run at video frame rates.
+function drawCellOnCanvas(ctx, cell, config) {
+  if (!cell.visible) return;
+  const pos = jittered(cell, config);
+  const opacity = clamp((0.22 + cell.mark * 0.86) * cell.alpha);
+  if (opacity <= 0.001) return;
+  const color = cell.color;
+  const base = Math.min(cell.w, cell.h) * config.density * (0.16 + cell.mark * 0.84);
+  const width = base * config.xScale;
+  const height = base * config.yScale;
+  ctx.globalAlpha = opacity;
+  const mode = config.mode;
+
+  if (mode === "dots") {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, Math.min(width, height) * 0.5, 0, TAU);
+    ctx.fill();
+    return;
+  }
+
+  if (mode === "rings") {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(0.65, Math.min(cell.w, cell.h) * 0.055 * config.density);
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, Math.min(width, height) * 0.5, 0, TAU);
+    ctx.stroke();
+    return;
+  }
+
+  if (mode === "squares" || mode === "rectangles") {
+    const rectW = mode === "squares" ? Math.min(width, height) : width;
+    const rectH = mode === "squares" ? Math.min(width, height) : height;
+    const rx = Math.min(rectW, rectH) * config.roundness * 0.35;
+    ctx.save();
+    ctx.translate(pos.x, pos.y);
+    ctx.rotate(pos.rotation * DEG);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (rx > 0.01 && ctx.roundRect) ctx.roundRect(-rectW / 2, -rectH / 2, rectW, rectH, rx);
+    else ctx.rect(-rectW / 2, -rectH / 2, rectW, rectH);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  if (mode === "triangles" || mode === "diamonds") {
+    const points = mode === "triangles"
+      ? [[0, -1], [0.92, 0.72], [-0.92, 0.72]]
+      : [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const radians = pos.rotation * DEG;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i += 1) {
+      const sx = points[i][0] * width * 0.5;
+      const sy = points[i][1] * height * 0.5;
+      const px = pos.x + sx * cos - sy * sin;
+      const py = pos.y + sx * sin + sy * cos;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    return;
+  }
+
+  if (mode === "hatch" || mode === "crosshatch" || mode === "waves") {
+    const length = Math.max(width, height) * (0.72 + cell.mark * 0.8);
+    const stroke = Math.max(0.65, Math.min(cell.w, cell.h) * 0.06 * config.density * (0.48 + cell.mark));
+    const wave = mode === "waves";
+    const angle = config.rotation + (wave ? Math.sin(cell.y * 0.55 + cell.x * 0.17) * 30 : 0);
+    ctx.strokeStyle = color;
+    ctx.lineCap = "round";
+    strokeLineCanvas(ctx, pos.x, pos.y, length, angle, stroke);
+    if (mode === "crosshatch" && cell.mark > 0.38) {
+      ctx.globalAlpha = opacity * 0.78;
+      strokeLineCanvas(ctx, pos.x, pos.y, length * 0.86, angle + 88, stroke * 0.76);
+    }
+    return;
+  }
+
+  const fontSize = Math.max(4, Math.min(cell.w, cell.h) * config.density * 1.28);
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  ctx.rotate(pos.rotation * DEG);
+  ctx.fillStyle = color;
+  ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(cell.char, 0, 0);
+  ctx.restore();
+}
+
+// Samples the current frame and paints every mark to a 2D context. Shared by the
+// live preview and the MP4 export so both look identical to the SVG output.
+function drawToCanvas(config, ctx, targetW, targetH, backgroundOverride) {
+  const grid = sampleImage(config);
+  const scale = targetW / state.naturalWidth;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, targetW, targetH);
+  const background = backgroundOverride !== undefined
+    ? backgroundOverride
+    : (config.transparentPaper ? null : config.paper);
+  if (background) {
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, targetW, targetH);
+  }
+  if (config.photoBackdrop && state.media) {
+    ctx.globalAlpha = 0.18;
+    ctx.drawImage(state.media, 0, 0, targetW, targetH);
+    ctx.globalAlpha = 1;
+  }
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  const cells = state.cells;
+  for (let i = 0; i < cells.length; i += 1) {
+    drawCellOnCanvas(ctx, cells[i], config);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  return grid;
+}
+
 function buildSvg(config, grid) {
   const width = state.naturalWidth;
   const height = state.naturalHeight;
@@ -375,16 +663,20 @@ function buildSvg(config, grid) {
 }
 
 function render() {
-  if (!state.image) return;
+  if (!state.media) return;
   controls.clipboardBuffer.classList.remove("ready");
   updateReadouts();
   const config = settings();
+  refreshVideoBackdrop(config);
   const grid = sampleImage(config);
   const svg = buildSvg(config, grid);
   document.documentElement.style.setProperty("--paper", config.paper);
   controls.svgMount.innerHTML = svg;
   controls.sampleCount.textContent = `${grid.visibleCount.toLocaleString()} marks`;
-  setStatus(`${grid.columns} x ${grid.rows} samples. Transparent pixels are removed from the SVG.`);
+  const suffix = state.sourceType === "video"
+    ? " Press Save MP4 to render the whole clip."
+    : " Transparent pixels are removed from the SVG.";
+  setStatus(`${grid.columns} x ${grid.rows} samples.${suffix}`);
 }
 
 function download(filename, href) {
@@ -392,6 +684,16 @@ function download(filename, href) {
   link.download = filename;
   link.href = href;
   link.click();
+}
+
+// The still-image exports read state.svg, which isn't rebuilt during canvas
+// playback. Refresh it from the current video frame before they run.
+function ensureCurrentSvg() {
+  if (state.sourceType !== "video") return;
+  const config = settings();
+  refreshVideoBackdrop(config);
+  const grid = sampleImage(config);
+  buildSvg(config, grid);
 }
 
 async function writeTextClipboard(text) {
@@ -425,6 +727,7 @@ function selectForManualCopy(text) {
 }
 
 async function copySvg() {
+  ensureCurrentSvg();
   const copied = await writeTextClipboard(state.svg);
   if (copied) {
     setStatus("SVG copied to clipboard.");
@@ -444,6 +747,7 @@ function svgToImage() {
 }
 
 async function rasterBlob(type) {
+  ensureCurrentSvg();
   const config = settings();
   const image = await svgToImage();
   const canvas = document.createElement("canvas");
@@ -476,6 +780,7 @@ async function copyPng() {
 }
 
 function saveSvg() {
+  ensureCurrentSvg();
   const blob = new Blob([state.svg], { type: "image/svg+xml" });
   download("pattern-field.svg", URL.createObjectURL(blob));
 }
@@ -485,9 +790,151 @@ async function saveRaster(type, filename) {
   download(filename, URL.createObjectURL(blob));
 }
 
+async function pickH264Codec(width, height, fps) {
+  const candidates = [
+    "avc1.640028", "avc1.4d0028", "avc1.42e01f",
+    "avc1.640020", "avc1.4d401f", "avc1.42001f",
+  ];
+  for (const codec of candidates) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec, width, height, bitrate: 8_000_000, framerate: fps,
+      });
+      if (support && support.supported) return codec;
+    } catch (error) {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function setExportingUi(active) {
+  controls.saveMp4.disabled = active;
+  controls.saveMp4.textContent = active ? "Encoding…" : "Save MP4";
+}
+
+async function exportMp4() {
+  if (state.sourceType !== "video" || !state.video) {
+    setStatus("Load a video first, then Save MP4.");
+    return;
+  }
+  if (state.exporting) return;
+  if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") {
+    setStatus("MP4 export needs WebCodecs — use Chrome/Edge or Safari 16.4+, served over http://localhost or https.");
+    return;
+  }
+
+  let Muxer;
+  let ArrayBufferTarget;
+  try {
+    ({ Muxer, ArrayBufferTarget } = await import("https://cdn.jsdelivr.net/npm/mp4-muxer@5/+esm"));
+  } catch (error) {
+    setStatus("Could not load the MP4 encoder (are you offline?).");
+    return;
+  }
+
+  const video = state.video;
+  const duration = video.duration;
+  if (!isFinite(duration) || duration <= 0) {
+    setStatus("Video duration is unknown, so it can't be exported.");
+    return;
+  }
+
+  const fps = 30;
+  const maxDim = 1280;
+  const scale = Math.min(1, maxDim / Math.max(state.naturalWidth, state.naturalHeight));
+  // H.264 requires even dimensions.
+  const outW = Math.max(2, Math.round(state.naturalWidth * scale) & ~1);
+  const outH = Math.max(2, Math.round(state.naturalHeight * scale) & ~1);
+
+  const codec = await pickH264Codec(outW, outH, fps);
+  if (!codec) {
+    setStatus("No supported H.264 configuration for this video size.");
+    return;
+  }
+
+  state.exporting = true;
+  const wasPaused = video.paused;
+  video.pause();
+  setExportingUi(true);
+  setStatus("Preparing MP4 export…");
+
+  const muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: { codec: "avc", width: outW, height: outH },
+    fastStart: "in-memory",
+  });
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (error) => {
+      console.error(error);
+      setStatus(`Encoder error: ${error.message}`);
+    },
+  });
+  encoder.configure({ codec, width: outW, height: outH, bitrate: 8_000_000, framerate: fps });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  const config = settings();
+  const totalFrames = Math.max(1, Math.floor(duration * fps));
+
+  // H.264 has no alpha, so force an opaque background.
+  const background = config.transparentPaper ? "#000000" : config.paper;
+
+  try {
+    for (let i = 0; i < totalFrames; i += 1) {
+      await seekVideo(i / fps);
+      // Same renderer as the live preview, straight onto the export canvas.
+      drawToCanvas(config, ctx, outW, outH, background);
+
+      const frame = new VideoFrame(canvas, {
+        timestamp: Math.round((i * 1e6) / fps),
+        duration: Math.round(1e6 / fps),
+      });
+      encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+      frame.close();
+
+      // Let the encoder drain so memory stays bounded.
+      while (encoder.encodeQueueSize > 10) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      if (i % 3 === 0) {
+        setStatus(`Encoding MP4… frame ${i + 1} / ${totalFrames}`);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+    }
+
+    await encoder.flush();
+    muxer.finalize();
+    const blob = new Blob([muxer.target.buffer], { type: "video/mp4" });
+    download("ash-video.mp4", URL.createObjectURL(blob));
+    setStatus(`MP4 exported — ${totalFrames} frames at ${fps} fps.`);
+  } catch (error) {
+    console.error(error);
+    setStatus(`MP4 export failed: ${error.message}`);
+  } finally {
+    if (encoder.state !== "closed") encoder.close();
+    state.exporting = false;
+    setExportingUi(false);
+    if (wasPaused) {
+      showOutput("svg");
+      render();
+    } else {
+      video.play().catch(() => {});
+    }
+  }
+}
+
 function bindEvents() {
   document.addEventListener("input", (event) => {
     if (event.target.matches("input[type='range'], select, input[type='checkbox'], input[type='color']")) {
+      // While the clip plays, the canvas loop already reflects live settings.
+      if (state.previewLoopActive) {
+        updateReadouts();
+        return;
+      }
       render();
     }
   });
@@ -495,12 +942,34 @@ function bindEvents() {
   controls.imageInput.addEventListener("change", (event) => {
     const [file] = event.target.files;
     if (!file) return;
+    if (file.type.startsWith("video/")) {
+      loadVideo(URL.createObjectURL(file));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       state.imageUrl = reader.result;
       loadImage(state.imageUrl);
     };
     reader.readAsDataURL(file);
+  });
+
+  // Playing -> smooth canvas loop. Pausing/scrubbing -> crisp SVG of that frame.
+  controls.sourceVideo.addEventListener("play", () => {
+    if (state.sourceType === "video" && !state.exporting) startPlaybackLoop();
+  });
+  controls.sourceVideo.addEventListener("pause", () => {
+    if (state.sourceType === "video" && !state.exporting) {
+      state.previewLoopActive = false;
+      showOutput("svg");
+      render();
+    }
+  });
+  controls.sourceVideo.addEventListener("seeked", () => {
+    if (state.sourceType === "video" && !state.exporting && controls.sourceVideo.paused) {
+      showOutput("svg");
+      render();
+    }
   });
 
   controls.copySvg.addEventListener("click", () => copySvg().catch(() => setStatus("SVG copy failed.")));
@@ -519,6 +988,10 @@ function bindEvents() {
   controls.saveJpg.addEventListener("click", () => {
     controls.exportMenu.open = false;
     saveRaster("image/jpeg", "pattern-field.jpg");
+  });
+  controls.saveMp4.addEventListener("click", () => {
+    controls.exportMenu.open = false;
+    exportMp4();
   });
 }
 

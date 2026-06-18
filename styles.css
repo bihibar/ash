@@ -294,12 +294,18 @@ h1 {
   width: 100%;
 }
 
-#svgMount svg {
+#svgMount svg,
+#outputCanvas {
   display: block;
   width: 100%;
   height: auto;
   max-height: calc(100vh - 208px);
   border-radius: 0;
+}
+
+#svgMount[hidden],
+#outputCanvas[hidden] {
+  display: none;
 }
 
 .source-frame {
@@ -317,12 +323,18 @@ h1 {
   background-size: 16px 16px;
 }
 
-.source-frame img {
+.source-frame img,
+.source-frame video {
   display: block;
   width: 100%;
   max-height: 220px;
   object-fit: contain;
   border-radius: 0;
+}
+
+.source-frame img[hidden],
+.source-frame video[hidden] {
+  display: none;
 }
 
 .controls {
