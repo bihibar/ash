@@ -1,3 +1,7 @@
+// Vanilla-app analytics. (The /next and /react entries are framework
+// components; inject() is the framework-agnostic equivalent.)
+import { inject } from "@vercel/analytics";
+
 const $ = (id) => document.getElementById(id);
 
 const controls = {
@@ -57,6 +61,7 @@ const controls = {
   cropApply: $("cropApply"),
   cropReset: $("cropReset"),
   cropCancel: $("cropCancel"),
+  resetSettings: $("resetSettings"),
 };
 
 const readouts = {
@@ -333,6 +338,7 @@ function loadImage(src) {
     resetCrop();
     applyCropDims();
     closeCropUi();
+    resetHistory();
     state.imageUrl = src;
     showSource("image");
     showOutput("svg");
@@ -378,6 +384,7 @@ async function onVideoReady() {
   resetCrop();
   applyCropDims();
   closeCropUi();
+  resetHistory();
   showSource("video");
   sizeOutputCanvas();
   await seekVideo(0);
@@ -1183,6 +1190,7 @@ function addStopAt(pos) {
   g.selected = g.stops.length - 1;
   buildGradientUi();
   gradientRender();
+  commitHistory();
 }
 
 function removeStop(index) {
@@ -1192,6 +1200,7 @@ function removeStop(index) {
   g.selected = Math.min(g.selected, g.stops.length - 1);
   buildGradientUi();
   gradientRender();
+  commitHistory();
 }
 
 function bindGradientEditor() {
@@ -1212,6 +1221,7 @@ function bindGradientEditor() {
     state.gradient.stops.forEach((stop) => { stop.pos = clamp(1 - stop.pos); });
     buildGradientUi();
     gradientRender();
+    commitHistory();
   });
 
   controls.gradientAddStop.addEventListener("click", () => addStopAt(0.5));
@@ -1225,8 +1235,10 @@ function bindGradientEditor() {
 
   // Drag a handle along the bar to move its stop.
   let dragIndex = -1;
+  let dragMoved = false;
   const onMove = (event) => {
     if (dragIndex < 0) return;
+    dragMoved = true;
     const rect = controls.gradientBar.getBoundingClientRect();
     const pos = clamp((event.clientX - rect.left) / rect.width);
     state.gradient.stops[dragIndex].pos = pos;
@@ -1239,6 +1251,8 @@ function bindGradientEditor() {
     dragIndex = -1;
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", endDrag);
+    if (dragMoved) commitHistory();
+    dragMoved = false;
   };
   controls.gradientBar.addEventListener("pointerdown", (event) => {
     const handle = event.target.closest(".gradient-handle");
@@ -1374,6 +1388,10 @@ function exitCrop(commit) {
   controls.cropOverlay.hidden = true;
   controls.cropActions.hidden = true;
   controls.cropToggle.classList.remove("active");
+  const changed = cropBackup && (
+    cropBackup.x !== state.crop.x || cropBackup.y !== state.crop.y ||
+    cropBackup.w !== state.crop.w || cropBackup.h !== state.crop.h
+  );
   if (!commit && cropBackup) {
     state.crop = cropBackup;
     applyCropDims();
@@ -1381,6 +1399,7 @@ function exitCrop(commit) {
   }
   cropBackup = null;
   cropDrag = null;
+  if (commit && changed) commitHistory();
 }
 
 function pointerFraction(event, rect) {
@@ -1489,6 +1508,84 @@ function bindCropTool() {
   });
 }
 
+/* ---------- History (undo / redo) & reset ---------- */
+
+const SETTING_INPUTS = [
+  "mode", "charset", "resolution", "brightness", "contrast", "gamma",
+  "cutoff", "alphaCutoff", "density", "xScale", "yScale", "rotation",
+  "jitter", "roundness", "inkColor", "paperColor",
+];
+const SETTING_CHECKS = [
+  "sampleColors", "invert", "uniformSize", "transparentPaper",
+  "photoBackdrop", "useGradient",
+];
+
+let undoStack = [];
+let redoStack = [];
+let present = null;
+let defaults = null;
+
+function snapshot() {
+  const v = {};
+  const c = {};
+  SETTING_INPUTS.forEach((id) => { v[id] = controls[id].value; });
+  SETTING_CHECKS.forEach((id) => { c[id] = controls[id].checked; });
+  return { v, c, gradient: structuredClone(state.gradient), crop: { ...state.crop } };
+}
+
+function applySnapshot(snap) {
+  if (state.cropping) closeCropUi();
+  SETTING_INPUTS.forEach((id) => { controls[id].value = snap.v[id]; });
+  SETTING_CHECKS.forEach((id) => { controls[id].checked = snap.c[id]; });
+  state.gradient = structuredClone(snap.gradient);
+  state.crop = { ...snap.crop };
+  applyCropDims();
+  controls.gradientEditor.hidden = !state.gradient.enabled;
+  buildGradientUi();
+  updateReadouts();
+  render();
+}
+
+// Record that a committed change just happened. `present` always holds the
+// state *before* this change, so push it; the new state becomes present.
+function commitHistory() {
+  if (!present) return;
+  undoStack.push(present);
+  if (undoStack.length > 120) undoStack.shift();
+  redoStack = [];
+  present = snapshot();
+}
+
+// New media wipes the per-image history so undo can't cross loads.
+function resetHistory() {
+  undoStack = [];
+  redoStack = [];
+  present = snapshot();
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(present);
+  present = undoStack.pop();
+  applySnapshot(present);
+  setStatus("Undo.");
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(present);
+  present = redoStack.pop();
+  applySnapshot(present);
+  setStatus("Redo.");
+}
+
+function resetSettings() {
+  if (!defaults) return;
+  applySnapshot(defaults);
+  commitHistory();
+  setStatus("All settings reset to defaults.");
+}
+
 function bindEvents() {
   document.addEventListener("input", (event) => {
     // The gradient editor manages its own state and re-render.
@@ -1505,6 +1602,27 @@ function bindEvents() {
 
   controls.imageInput.addEventListener("change", (event) => {
     handleMediaFile(event.target.files[0]);
+  });
+
+  // One undo entry per committed control change (slider release, select,
+  // checkbox, colour, gradient field). Programmatic value changes don't fire
+  // "change", so applying history never re-records itself.
+  document.addEventListener("change", (event) => {
+    const t = event.target;
+    if (t === controls.imageInput || t === controls.clipboardBuffer) return;
+    if (t.matches("input, select")) commitHistory();
+  });
+
+  controls.resetSettings.addEventListener("click", resetSettings);
+
+  document.addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+    // Let native text editing keep its own undo.
+    const t = event.target;
+    if (t instanceof Element && t.matches('input[type="text"], input[type="number"], textarea')) return;
+    event.preventDefault();
+    if (event.shiftKey) redo();
+    else undo();
   });
 
   // Playing -> smooth canvas loop. Pausing/scrubbing -> crisp SVG of that frame.
@@ -1580,11 +1698,15 @@ function bindEvents() {
 }
 
 function init() {
+  inject();
   bindEvents();
   bindGradientEditor();
   bindPaste();
   bindCropTool();
   buildGradientUi();
+  // Capture the pristine control values so "Reset" can restore them.
+  defaults = snapshot();
+  present = snapshot();
   state.imageUrl = createDemoImage();
   loadImage(state.imageUrl);
 }
