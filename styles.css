@@ -513,7 +513,28 @@ button:disabled {
   letter-spacing: 0.02em;
 }
 
+.source-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.source-mini-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: calc(var(--radius) - 4px);
+}
+
+.source-mini-btn.active {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+}
+
 .source-frame {
+  position: relative;
   display: grid;
   place-items: center;
   min-height: 150px;
@@ -539,6 +560,88 @@ button:disabled {
 .source-frame img[hidden],
 .source-frame video[hidden] {
   display: none;
+}
+
+/* ---------- Crop tool ---------- */
+.crop-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.crop-overlay[hidden] {
+  display: none;
+}
+
+.crop-box {
+  position: absolute;
+  border: 1px solid hsl(var(--foreground));
+  box-shadow: 0 0 0 9999px hsl(var(--background) / 0.6);
+  cursor: move;
+  touch-action: none;
+}
+
+/* rule-of-thirds guides */
+.crop-box::before,
+.crop-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.crop-box::before {
+  background:
+    linear-gradient(hsl(var(--foreground) / 0.35), hsl(var(--foreground) / 0.35)) 33.33% 0 / 1px 100% no-repeat,
+    linear-gradient(hsl(var(--foreground) / 0.35), hsl(var(--foreground) / 0.35)) 66.66% 0 / 1px 100% no-repeat;
+}
+
+.crop-box::after {
+  background:
+    linear-gradient(hsl(var(--foreground) / 0.35), hsl(var(--foreground) / 0.35)) 0 33.33% / 100% 1px no-repeat,
+    linear-gradient(hsl(var(--foreground) / 0.35), hsl(var(--foreground) / 0.35)) 0 66.66% / 100% 1px no-repeat;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: hsl(var(--foreground));
+  border: 1px solid hsl(var(--background));
+  border-radius: 2px;
+  transform: translate(-50%, -50%);
+}
+
+.crop-handle[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle[data-h="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle[data-h="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle[data-h="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle[data-h="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle[data-h="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle[data-h="w"] { left: 0; top: 50%; cursor: ew-resize; }
+
+.crop-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 13px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.crop-actions[hidden] {
+  display: none;
+}
+
+.crop-actions button {
+  height: 32px;
+  flex: 1;
+  font-size: 12.5px;
+}
+
+.crop-actions .primary-action {
+  min-width: 0;
 }
 
 /* ---------- Control groups (accordions) ---------- */
@@ -736,6 +839,174 @@ input[type="color"]::-webkit-color-swatch {
 
 input[type="color"]::-webkit-color-swatch-wrapper {
   padding: 0;
+}
+
+/* ---------- Gradient editor ---------- */
+.gradient-block {
+  margin: 12px 14px 4px;
+}
+
+.gradient-block > .check {
+  margin: 0;
+}
+
+.gradient-editor {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--background));
+}
+
+.gradient-editor[hidden] {
+  display: none;
+}
+
+.gradient-bar {
+  position: relative;
+  height: 30px;
+  margin-bottom: 18px;
+  border-radius: calc(var(--radius) - 3px);
+  border: 1px solid hsl(var(--border));
+  cursor: copy;
+  /* checkerboard shows through stop transparency */
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #bbb 25%, transparent 25%),
+    linear-gradient(-45deg, #bbb 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #bbb 75%),
+    linear-gradient(-45deg, transparent 75%, #bbb 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+}
+
+.gradient-handle {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  padding: 0;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: var(--swatch, #fff);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  transition: transform 0.08s ease;
+}
+
+.gradient-handle:hover {
+  background: var(--swatch, #fff);
+}
+
+.gradient-handle.selected {
+  transform: translate(-50%, -50%) scale(1.2);
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 0 1px hsl(var(--ring)), 0 1px 5px rgba(0, 0, 0, 0.6);
+}
+
+.gradient-angle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+.gradient-angle-row label {
+  flex: none;
+}
+
+.gradient-angle-row input[type="range"] {
+  flex: 1;
+  width: auto;
+  margin: 0;
+}
+
+.gradient-angle-row output {
+  min-width: 38px;
+}
+
+.gradient-stops-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: hsl(var(--foreground));
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.gradient-stops {
+  display: grid;
+  gap: 6px;
+}
+
+.gradient-stop-row {
+  display: grid;
+  grid-template-columns: 52px 30px 1fr 52px 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 3px);
+}
+
+.gradient-stop-row.selected {
+  border-color: hsl(var(--ring) / 0.5);
+  background: hsl(var(--secondary) / 0.5);
+}
+
+.gradient-stop-row input.g-pos,
+.gradient-stop-row input.g-hex,
+.gradient-stop-row input.g-opacity {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid hsl(var(--input));
+  border-radius: calc(var(--radius) - 4px);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: center;
+}
+
+.gradient-stop-row input.g-hex {
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.gradient-stop-row input::-webkit-outer-spin-button,
+.gradient-stop-row input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.g-swatch {
+  display: block;
+  width: 30px;
+  height: 30px;
+}
+
+.g-swatch input[type="color"] {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+}
+
+.gradient-mini-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 0;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: calc(var(--radius) - 4px);
 }
 
 /* ---------- Switches (checkboxes) ---------- */

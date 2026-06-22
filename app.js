@@ -39,6 +39,24 @@ const controls = {
   saveMp4: $("saveMp4"),
   exportMenu: document.querySelector(".export-menu"),
   clipboardBuffer: $("clipboardBuffer"),
+  useGradient: $("useGradient"),
+  gradientBlock: $("gradientBlock"),
+  gradientEditor: $("gradientEditor"),
+  gradientBar: $("gradientBar"),
+  gradientAngle: $("gradientAngle"),
+  gradientAngleValue: $("gradientAngleValue"),
+  gradientReverse: $("gradientReverse"),
+  gradientAddStop: $("gradientAddStop"),
+  gradientStops: $("gradientStops"),
+  uniformSize: $("uniformSize"),
+  cropToggle: $("cropToggle"),
+  sourceFrame: $("sourceFrame"),
+  cropOverlay: $("cropOverlay"),
+  cropBox: $("cropBox"),
+  cropActions: $("cropActions"),
+  cropApply: $("cropApply"),
+  cropReset: $("cropReset"),
+  cropCancel: $("cropCancel"),
 };
 
 const readouts = {
@@ -73,11 +91,26 @@ const state = {
   videoObjectUrl: "",
   naturalWidth: 1280,
   naturalHeight: 780,
+  mediaWidth: 1280,
+  mediaHeight: 780,
+  // Crop as fractions (0..1) of the full media. naturalWidth/Height track the
+  // cropped region so all downstream output sizing stays correct.
+  crop: { x: 0, y: 0, w: 1, h: 1 },
+  cropping: false,
   cells: [],
   asciiText: "",
   svg: "",
   exporting: false,
   previewLoopActive: false,
+  gradient: {
+    enabled: false,
+    angle: 90,
+    stops: [
+      { color: "#d9d9d9", opacity: 1, pos: 0 },
+      { color: "#737373", opacity: 1, pos: 1 },
+    ],
+    selected: 0,
+  },
 };
 
 const backdropCanvas = document.createElement("canvas");
@@ -102,6 +135,67 @@ function hash2(x, y) {
   return n - Math.floor(n);
 }
 
+const GRADIENT_ID = "inkGradient";
+
+function hexToRgb(hex) {
+  const value = hex.replace("#", "");
+  const full = value.length === 3
+    ? value.split("").map((c) => c + c).join("")
+    : value;
+  const int = parseInt(full, 16);
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+
+function rgbaString(hex, opacity) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+// A gradient should read across the whole image (Figma-style fill over a
+// selection), so the vector spans the bounding box and an angle rotates it
+// about the centre. 0deg = left→right, 90deg = top→bottom.
+function gradientVector(angle, width, height) {
+  const rad = angle * DEG;
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  const half = (Math.abs(dx) * width + Math.abs(dy) * height) / 2;
+  const cx = width / 2;
+  const cy = height / 2;
+  return {
+    x1: cx - dx * half,
+    y1: cy - dy * half,
+    x2: cx + dx * half,
+    y2: cy + dy * half,
+  };
+}
+
+// True only when the gradient fill should replace the solid ink. Sampling image
+// colours always wins, matching the per-cell rgb() path.
+function gradientActive(config) {
+  return config.gradient.enabled && !config.sampleColors && config.gradient.stops.length > 0;
+}
+
+function buildGradientDefs(config) {
+  if (!gradientActive(config)) return "";
+  const { x1, y1, x2, y2 } = gradientVector(config.gradient.angle, state.naturalWidth, state.naturalHeight);
+  const stops = config.gradient.stops
+    .map((stop) => `<stop offset="${(clamp(stop.pos) * 100).toFixed(2)}%" stop-color="${esc(stop.color)}" stop-opacity="${clamp(stop.opacity).toFixed(3)}"/>`)
+    .join("");
+  return `<defs><linearGradient id="${GRADIENT_ID}" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}">${stops}</linearGradient></defs>`;
+}
+
+// Canvas twin of the SVG gradient, built in source-pixel space so it lines up
+// with the scaled cell geometry.
+function buildCanvasGradient(ctx, config) {
+  if (!gradientActive(config)) return null;
+  const { x1, y1, x2, y2 } = gradientVector(config.gradient.angle, state.naturalWidth, state.naturalHeight);
+  const gradient = ctx.createLinearGradient(x1, y1, x2, y2);
+  for (const stop of config.gradient.stops) {
+    gradient.addColorStop(clamp(stop.pos), rgbaString(stop.color, clamp(stop.opacity)));
+  }
+  return gradient;
+}
+
 function settings() {
   return {
     mode: controls.mode.value,
@@ -122,8 +216,15 @@ function settings() {
     paper: controls.paperColor.value,
     sampleColors: controls.sampleColors.checked,
     invert: controls.invert.checked,
+    uniformSize: controls.uniformSize.checked,
     transparentPaper: controls.transparentPaper.checked,
     photoBackdrop: controls.photoBackdrop.checked,
+    gradient: {
+      enabled: state.gradient.enabled,
+      angle: state.gradient.angle,
+      // Sorted, immutable snapshot so SVG and canvas read identical stops.
+      stops: [...state.gradient.stops].sort((a, b) => a.pos - b.pos),
+    },
   };
 }
 
@@ -209,6 +310,17 @@ function createDemoImage() {
   return canvas.toDataURL("image/png");
 }
 
+// naturalWidth/Height track the cropped region; mediaWidth/Height stay the full
+// source. Call after a load or whenever the crop rect changes.
+function applyCropDims() {
+  state.naturalWidth = Math.max(1, Math.round(state.mediaWidth * state.crop.w));
+  state.naturalHeight = Math.max(1, Math.round(state.mediaHeight * state.crop.h));
+}
+
+function resetCrop() {
+  state.crop = { x: 0, y: 0, w: 1, h: 1 };
+}
+
 function loadImage(src) {
   const image = new Image();
   image.onload = () => {
@@ -216,8 +328,11 @@ function loadImage(src) {
     state.sourceType = "image";
     state.media = image;
     state.image = image;
-    state.naturalWidth = image.naturalWidth;
-    state.naturalHeight = image.naturalHeight;
+    state.mediaWidth = image.naturalWidth;
+    state.mediaHeight = image.naturalHeight;
+    resetCrop();
+    applyCropDims();
+    closeCropUi();
     state.imageUrl = src;
     showSource("image");
     showOutput("svg");
@@ -258,8 +373,11 @@ async function onVideoReady() {
   state.sourceType = "video";
   state.media = video;
   state.video = video;
-  state.naturalWidth = video.videoWidth;
-  state.naturalHeight = video.videoHeight;
+  state.mediaWidth = video.videoWidth;
+  state.mediaHeight = video.videoHeight;
+  resetCrop();
+  applyCropDims();
+  closeCropUi();
   showSource("video");
   sizeOutputCanvas();
   await seekVideo(0);
@@ -375,19 +493,24 @@ function startPlaybackLoop() {
   else requestAnimationFrame(step);
 }
 
-// The faint source backdrop embeds a data URL in the SVG. For video that has to
-// be the current frame, so capture a downscaled snapshot on demand.
-function refreshVideoBackdrop(config) {
-  if (state.sourceType !== "video" || !config.photoBackdrop) return;
-  const maxDim = 640;
-  const scale = Math.min(1, maxDim / Math.max(state.naturalWidth, state.naturalHeight));
-  const w = Math.max(1, Math.round(state.naturalWidth * scale));
-  const h = Math.max(1, Math.round(state.naturalHeight * scale));
+// The faint source backdrop embeds a data URL in the SVG. It must reflect the
+// current crop (and, for video, the current frame), so snapshot the cropped
+// region on demand whenever the backdrop is enabled.
+function refreshBackdrop(config) {
+  if (!config.photoBackdrop || !state.media) return;
+  const cr = state.crop;
+  const cropW = cr.w * state.mediaWidth;
+  const cropH = cr.h * state.mediaHeight;
+  const maxDim = 720;
+  const scale = Math.min(1, maxDim / Math.max(cropW, cropH));
+  const w = Math.max(1, Math.round(cropW * scale));
+  const h = Math.max(1, Math.round(cropH * scale));
   backdropCanvas.width = w;
   backdropCanvas.height = h;
   const ctx = backdropCanvas.getContext("2d");
-  ctx.drawImage(state.media, 0, 0, w, h);
-  state.imageUrl = backdropCanvas.toDataURL("image/jpeg", 0.6);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(state.media, cr.x * state.mediaWidth, cr.y * state.mediaHeight, cropW, cropH, 0, 0, w, h);
+  state.imageUrl = backdropCanvas.toDataURL(state.sourceType === "video" ? "image/jpeg" : "image/png", 0.85);
 }
 
 function sampleImage(config) {
@@ -403,7 +526,13 @@ function sampleImage(config) {
   canvas.width = columns;
   canvas.height = rows;
   ctx.clearRect(0, 0, columns, rows);
-  ctx.drawImage(image, 0, 0, columns, rows);
+  const cr = state.crop;
+  ctx.drawImage(
+    image,
+    cr.x * state.mediaWidth, cr.y * state.mediaHeight,
+    cr.w * state.mediaWidth, cr.h * state.mediaHeight,
+    0, 0, columns, rows,
+  );
 
   const pixels = ctx.getImageData(0, 0, columns, rows).data;
   const cells = [];
@@ -492,8 +621,10 @@ function renderCell(cell, config) {
   const pos = jittered(cell, config);
   const opacity = clamp((0.22 + cell.mark * 0.86) * cell.alpha);
   if (opacity <= 0.001) return "";
-  const ink = esc(cell.color);
-  const base = Math.min(cell.w, cell.h) * config.density * (0.16 + cell.mark * 0.84);
+  const ink = gradientActive(config) ? `url(#${GRADIENT_ID})` : esc(cell.color);
+  // Uniform size ignores per-cell tone so every mark is the same dimension.
+  const sizeMark = config.uniformSize ? 1 : cell.mark;
+  const base = Math.min(cell.w, cell.h) * config.density * (0.16 + sizeMark * 0.84);
   const width = base * config.xScale;
   const height = base * config.yScale;
 
@@ -524,8 +655,8 @@ function renderCell(cell, config) {
   }
 
   if (config.mode === "hatch" || config.mode === "crosshatch" || config.mode === "waves") {
-    const length = Math.max(width, height) * (0.72 + cell.mark * 0.8);
-    const stroke = Math.max(0.65, Math.min(cell.w, cell.h) * 0.06 * config.density * (0.48 + cell.mark));
+    const length = Math.max(width, height) * (0.72 + sizeMark * 0.8);
+    const stroke = Math.max(0.65, Math.min(cell.w, cell.h) * 0.06 * config.density * (0.48 + sizeMark));
     const wave = config.mode === "waves";
     const angle = config.rotation + (wave ? Math.sin(cell.y * 0.55 + cell.x * 0.17) * 30 : 0);
     const first = lineMark(pos.x, pos.y, length, angle, stroke, ink, opacity);
@@ -552,13 +683,14 @@ function strokeLineCanvas(ctx, x, y, length, angle, stroke) {
 
 // Canvas twin of renderCell — same geometry, drawn instead of serialized so it
 // can run at video frame rates.
-function drawCellOnCanvas(ctx, cell, config) {
+function drawCellOnCanvas(ctx, cell, config, fill) {
   if (!cell.visible) return;
   const pos = jittered(cell, config);
   const opacity = clamp((0.22 + cell.mark * 0.86) * cell.alpha);
   if (opacity <= 0.001) return;
-  const color = cell.color;
-  const base = Math.min(cell.w, cell.h) * config.density * (0.16 + cell.mark * 0.84);
+  const color = fill || cell.color;
+  const sizeMark = config.uniformSize ? 1 : cell.mark;
+  const base = Math.min(cell.w, cell.h) * config.density * (0.16 + sizeMark * 0.84);
   const width = base * config.xScale;
   const height = base * config.yScale;
   ctx.globalAlpha = opacity;
@@ -620,8 +752,8 @@ function drawCellOnCanvas(ctx, cell, config) {
   }
 
   if (mode === "hatch" || mode === "crosshatch" || mode === "waves") {
-    const length = Math.max(width, height) * (0.72 + cell.mark * 0.8);
-    const stroke = Math.max(0.65, Math.min(cell.w, cell.h) * 0.06 * config.density * (0.48 + cell.mark));
+    const length = Math.max(width, height) * (0.72 + sizeMark * 0.8);
+    const stroke = Math.max(0.65, Math.min(cell.w, cell.h) * 0.06 * config.density * (0.48 + sizeMark));
     const wave = mode === "waves";
     const angle = config.rotation + (wave ? Math.sin(cell.y * 0.55 + cell.x * 0.17) * 30 : 0);
     ctx.strokeStyle = color;
@@ -662,14 +794,23 @@ function drawToCanvas(config, ctx, targetW, targetH, backgroundOverride) {
     ctx.fillRect(0, 0, targetW, targetH);
   }
   if (config.photoBackdrop && state.media) {
+    const cr = state.crop;
     ctx.globalAlpha = 0.18;
-    ctx.drawImage(state.media, 0, 0, targetW, targetH);
+    ctx.drawImage(
+      state.media,
+      cr.x * state.mediaWidth, cr.y * state.mediaHeight,
+      cr.w * state.mediaWidth, cr.h * state.mediaHeight,
+      0, 0, targetW, targetH,
+    );
     ctx.globalAlpha = 1;
   }
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  // Gradient is built in source-pixel space (same as the cell geometry) so it
+  // spans the image consistently under the active transform.
+  const fill = buildCanvasGradient(ctx, config);
   const cells = state.cells;
   for (let i = 0; i < cells.length; i += 1) {
-    drawCellOnCanvas(ctx, cells[i], config);
+    drawCellOnCanvas(ctx, cells[i], config, fill);
   }
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
@@ -683,8 +824,10 @@ function buildSvg(config, grid) {
   const backdrop = config.photoBackdrop && state.imageUrl
     ? `<image href="${esc(state.imageUrl)}" width="${width}" height="${height}" opacity="0.18" preserveAspectRatio="none"/>`
     : "";
+  const defs = buildGradientDefs(config);
   const marks = state.cells.map((cell) => renderCell(cell, config)).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="0 0 ${Math.round(width)} ${Math.round(height)}" role="img" aria-label="Generated vector pattern">
+  ${defs}
   ${background}
   ${backdrop}
   <g data-pattern="${esc(config.mode)}" data-columns="${grid.columns}" data-rows="${grid.rows}" data-alpha-aware="true">
@@ -700,7 +843,7 @@ function render() {
   controls.clipboardBuffer.classList.remove("ready");
   updateReadouts();
   const config = settings();
-  refreshVideoBackdrop(config);
+  refreshBackdrop(config);
   const grid = sampleImage(config);
   const svg = buildSvg(config, grid);
   document.documentElement.style.setProperty("--paper", config.paper);
@@ -724,7 +867,7 @@ function download(filename, href) {
 function ensureCurrentSvg() {
   if (state.sourceType !== "video") return;
   const config = settings();
-  refreshVideoBackdrop(config);
+  refreshBackdrop(config);
   const grid = sampleImage(config);
   buildSvg(config, grid);
 }
@@ -966,8 +1109,390 @@ async function exportMp4() {
   }
 }
 
+/* ---------- Gradient editor (Figma-style) ---------- */
+
+// Re-render the output after a gradient edit, mirroring the playback rule used
+// elsewhere: while a clip plays, the canvas loop already reads live settings.
+function gradientRender() {
+  if (state.previewLoopActive) return;
+  render();
+}
+
+// Repaint the preview bar background and reposition every handle. Cheap enough
+// to call on each drag / value tweak without rebuilding the stop rows.
+function paintGradientBar() {
+  const g = state.gradient;
+  const sorted = [...g.stops].sort((a, b) => a.pos - b.pos);
+  const css = sorted
+    .map((stop) => `${rgbaString(stop.color, clamp(stop.opacity))} ${(clamp(stop.pos) * 100).toFixed(1)}%`)
+    .join(", ");
+  controls.gradientBar.style.background = `linear-gradient(90deg, ${css})`;
+  controls.gradientBar.querySelectorAll(".gradient-handle").forEach((handle) => {
+    const index = Number(handle.dataset.index);
+    const stop = g.stops[index];
+    if (!stop) return;
+    handle.style.left = `${clamp(stop.pos) * 100}%`;
+    handle.style.setProperty("--swatch", stop.color);
+    handle.classList.toggle("selected", index === g.selected);
+  });
+}
+
+// Full rebuild of handles + rows. Used on structural changes (add / remove /
+// select / reverse / enable) — avoided during inline edits so inputs keep focus.
+function buildGradientUi() {
+  const g = state.gradient;
+  controls.gradientAngle.value = g.angle;
+  controls.gradientAngleValue.value = `${Math.round(g.angle)}°`;
+
+  const handles = g.stops
+    .map((stop, index) => `<button type="button" class="gradient-handle${index === g.selected ? " selected" : ""}" data-index="${index}" style="left:${clamp(stop.pos) * 100}%;--swatch:${esc(stop.color)}" aria-label="Gradient stop"></button>`)
+    .join("");
+  controls.gradientBar.innerHTML = handles;
+
+  const rows = g.stops
+    .map((stop, index) => {
+      const hex = stop.color.replace("#", "").toUpperCase();
+      return `<div class="gradient-stop-row${index === g.selected ? " selected" : ""}" data-index="${index}">
+        <input class="g-pos" type="number" min="0" max="100" value="${Math.round(stop.pos * 100)}" aria-label="Stop position" />
+        <span class="g-swatch"><input class="g-color" type="color" value="${esc(stop.color)}" aria-label="Stop color" /></span>
+        <input class="g-hex" type="text" maxlength="7" value="${esc(hex)}" aria-label="Stop hex" />
+        <input class="g-opacity" type="number" min="0" max="100" value="${Math.round(stop.opacity * 100)}" aria-label="Stop opacity" />
+        <button class="g-remove gradient-mini-btn" type="button" ${g.stops.length <= 2 ? "disabled" : ""} aria-label="Remove stop">−</button>
+      </div>`;
+    })
+    .join("");
+  controls.gradientStops.innerHTML = rows;
+  paintGradientBar();
+}
+
+function selectStop(index) {
+  state.gradient.selected = index;
+  buildGradientUi();
+}
+
+function addStopAt(pos) {
+  const g = state.gradient;
+  const clamped = clamp(pos);
+  // Inherit the colour the gradient already shows at this position.
+  const sorted = [...g.stops].sort((a, b) => a.pos - b.pos);
+  let near = sorted[0];
+  for (const stop of sorted) {
+    if (stop.pos <= clamped) near = stop;
+  }
+  g.stops.push({ color: near.color, opacity: near.opacity, pos: clamped });
+  g.selected = g.stops.length - 1;
+  buildGradientUi();
+  gradientRender();
+}
+
+function removeStop(index) {
+  const g = state.gradient;
+  if (g.stops.length <= 2) return;
+  g.stops.splice(index, 1);
+  g.selected = Math.min(g.selected, g.stops.length - 1);
+  buildGradientUi();
+  gradientRender();
+}
+
+function bindGradientEditor() {
+  controls.useGradient.addEventListener("change", () => {
+    state.gradient.enabled = controls.useGradient.checked;
+    controls.gradientEditor.hidden = !state.gradient.enabled;
+    if (state.gradient.enabled) buildGradientUi();
+    gradientRender();
+  });
+
+  controls.gradientAngle.addEventListener("input", () => {
+    state.gradient.angle = Number(controls.gradientAngle.value);
+    controls.gradientAngleValue.value = `${Math.round(state.gradient.angle)}°`;
+    gradientRender();
+  });
+
+  controls.gradientReverse.addEventListener("click", () => {
+    state.gradient.stops.forEach((stop) => { stop.pos = clamp(1 - stop.pos); });
+    buildGradientUi();
+    gradientRender();
+  });
+
+  controls.gradientAddStop.addEventListener("click", () => addStopAt(0.5));
+
+  // Click an empty spot on the bar to drop a new stop there.
+  controls.gradientBar.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".gradient-handle")) return;
+    const rect = controls.gradientBar.getBoundingClientRect();
+    addStopAt((event.clientX - rect.left) / rect.width);
+  });
+
+  // Drag a handle along the bar to move its stop.
+  let dragIndex = -1;
+  const onMove = (event) => {
+    if (dragIndex < 0) return;
+    const rect = controls.gradientBar.getBoundingClientRect();
+    const pos = clamp((event.clientX - rect.left) / rect.width);
+    state.gradient.stops[dragIndex].pos = pos;
+    const row = controls.gradientStops.querySelector(`.gradient-stop-row[data-index="${dragIndex}"] .g-pos`);
+    if (row) row.value = Math.round(pos * 100);
+    paintGradientBar();
+    gradientRender();
+  };
+  const endDrag = () => {
+    dragIndex = -1;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", endDrag);
+  };
+  controls.gradientBar.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest(".gradient-handle");
+    if (!handle) return;
+    dragIndex = Number(handle.dataset.index);
+    selectStop(dragIndex);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", endDrag);
+  });
+
+  // Inline edits on the stop rows.
+  controls.gradientStops.addEventListener("input", (event) => {
+    const row = event.target.closest(".gradient-stop-row");
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    const stop = state.gradient.stops[index];
+    if (!stop) return;
+
+    if (event.target.classList.contains("g-pos")) {
+      stop.pos = clamp(Number(event.target.value) / 100);
+    } else if (event.target.classList.contains("g-opacity")) {
+      stop.opacity = clamp(Number(event.target.value) / 100);
+    } else if (event.target.classList.contains("g-color")) {
+      stop.color = event.target.value;
+      const hex = row.querySelector(".g-hex");
+      if (hex) hex.value = stop.color.replace("#", "").toUpperCase();
+    } else if (event.target.classList.contains("g-hex")) {
+      const normalized = `#${event.target.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6)}`;
+      if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(normalized)) {
+        stop.color = normalized;
+        const swatch = row.querySelector(".g-color");
+        if (swatch) swatch.value = stop.color;
+      }
+    }
+    paintGradientBar();
+    gradientRender();
+  });
+
+  controls.gradientStops.addEventListener("click", (event) => {
+    const row = event.target.closest(".gradient-stop-row");
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (event.target.closest(".g-remove")) {
+      removeStop(index);
+    } else if (!event.target.closest("input")) {
+      selectStop(index);
+    }
+  });
+}
+
+// Cmd/Ctrl+V anywhere on the page loads a pasted image (or video) from the
+// clipboard, the same path as the file picker and drag-and-drop.
+function bindPaste() {
+  window.addEventListener("paste", (event) => {
+    const items = event.clipboardData && event.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === "file" && (item.type.startsWith("image/") || item.type.startsWith("video/"))) {
+        const file = item.getAsFile();
+        if (file) {
+          event.preventDefault();
+          handleMediaFile(file);
+          setStatus("Pasted from clipboard.");
+        }
+        return;
+      }
+    }
+  });
+}
+
+/* ---------- Crop tool ---------- */
+
+let cropDraft = { x: 0, y: 0, w: 1, h: 1 };
+let cropBackup = null;
+let cropDrag = null;
+const MIN_CROP = 0.05;
+
+function activeMediaEl() {
+  return state.sourceType === "video" ? controls.sourceVideo : controls.sourcePreview;
+}
+
+// The on-screen rectangle the source image actually occupies inside the frame
+// (object-fit: contain letterboxes it), in coordinates relative to the frame.
+function contentRect() {
+  const frame = controls.sourceFrame.getBoundingClientRect();
+  const box = activeMediaEl().getBoundingClientRect();
+  const natRatio = state.mediaWidth / state.mediaHeight;
+  let cw = box.width;
+  let ch = box.height;
+  if (box.width / box.height > natRatio) {
+    ch = box.height;
+    cw = ch * natRatio;
+  } else {
+    cw = box.width;
+    ch = cw / natRatio;
+  }
+  return {
+    left: box.left - frame.left + (box.width - cw) / 2,
+    top: box.top - frame.top + (box.height - ch) / 2,
+    width: cw,
+    height: ch,
+  };
+}
+
+function positionCropBox() {
+  const rect = contentRect();
+  const d = cropDraft;
+  controls.cropBox.style.left = `${rect.left + d.x * rect.width}px`;
+  controls.cropBox.style.top = `${rect.top + d.y * rect.height}px`;
+  controls.cropBox.style.width = `${d.w * rect.width}px`;
+  controls.cropBox.style.height = `${d.h * rect.height}px`;
+}
+
+function cropLiveRender() {
+  state.crop = { ...cropDraft };
+  applyCropDims();
+  if (!state.previewLoopActive) render();
+}
+
+function enterCrop() {
+  if (!state.media) return;
+  state.cropping = true;
+  cropBackup = { ...state.crop };
+  cropDraft = { ...state.crop };
+  controls.cropOverlay.hidden = false;
+  controls.cropActions.hidden = false;
+  controls.cropToggle.classList.add("active");
+  positionCropBox();
+}
+
+function exitCrop(commit) {
+  state.cropping = false;
+  controls.cropOverlay.hidden = true;
+  controls.cropActions.hidden = true;
+  controls.cropToggle.classList.remove("active");
+  if (!commit && cropBackup) {
+    state.crop = cropBackup;
+    applyCropDims();
+    if (!state.previewLoopActive) render();
+  }
+  cropBackup = null;
+  cropDrag = null;
+}
+
+function pointerFraction(event, rect) {
+  const frame = controls.sourceFrame.getBoundingClientRect();
+  const px = event.clientX - frame.left - rect.left;
+  const py = event.clientY - frame.top - rect.top;
+  return { fx: clamp(px / rect.width), fy: clamp(py / rect.height) };
+}
+
+function startCropDrag(event) {
+  const rect = contentRect();
+  const handle = event.target.closest(".crop-handle");
+  const inBox = event.target.closest("#cropBox");
+  let mode = "draw";
+  if (handle) mode = handle.dataset.h;
+  else if (inBox) mode = "move";
+
+  cropDrag = { mode, rect, startX: event.clientX, startY: event.clientY, orig: { ...cropDraft } };
+
+  // Clicking empty space begins a brand-new selection anchored at that point.
+  if (mode === "draw") {
+    const { fx, fy } = pointerFraction(event, rect);
+    cropDrag.anchorX = fx;
+    cropDrag.anchorY = fy;
+    cropDraft = { x: fx, y: fy, w: 0, h: 0 };
+  }
+
+  event.preventDefault();
+  window.addEventListener("pointermove", onCropMove);
+  window.addEventListener("pointerup", endCropDrag);
+}
+
+function onCropMove(event) {
+  if (!cropDrag) return;
+  const r = cropDrag.rect;
+  const o = cropDrag.orig;
+  const dx = (event.clientX - cropDrag.startX) / r.width;
+  const dy = (event.clientY - cropDrag.startY) / r.height;
+  const mode = cropDrag.mode;
+
+  if (mode === "move") {
+    cropDraft = {
+      x: clamp(o.x + dx, 0, 1 - o.w),
+      y: clamp(o.y + dy, 0, 1 - o.h),
+      w: o.w,
+      h: o.h,
+    };
+  } else if (mode === "draw") {
+    const { fx, fy } = pointerFraction(event, r);
+    const x = Math.min(cropDrag.anchorX, fx);
+    const y = Math.min(cropDrag.anchorY, fy);
+    cropDraft = {
+      x,
+      y,
+      w: Math.min(Math.max(MIN_CROP, Math.abs(fx - cropDrag.anchorX)), 1 - x),
+      h: Math.min(Math.max(MIN_CROP, Math.abs(fy - cropDrag.anchorY)), 1 - y),
+    };
+  } else {
+    let left = o.x;
+    let top = o.y;
+    let right = o.x + o.w;
+    let bottom = o.y + o.h;
+    if (mode.includes("w")) left = clamp(o.x + dx, 0, right - MIN_CROP);
+    if (mode.includes("e")) right = clamp(o.x + o.w + dx, left + MIN_CROP, 1);
+    if (mode.includes("n")) top = clamp(o.y + dy, 0, bottom - MIN_CROP);
+    if (mode.includes("s")) bottom = clamp(o.y + o.h + dy, top + MIN_CROP, 1);
+    cropDraft = { x: left, y: top, w: right - left, h: bottom - top };
+  }
+
+  positionCropBox();
+  cropLiveRender();
+}
+
+function endCropDrag() {
+  cropDrag = null;
+  window.removeEventListener("pointermove", onCropMove);
+  window.removeEventListener("pointerup", endCropDrag);
+}
+
+// Dismiss the crop UI without restoring a backup — used when fresh media loads
+// (which resets the crop on its own).
+function closeCropUi() {
+  state.cropping = false;
+  controls.cropOverlay.hidden = true;
+  controls.cropActions.hidden = true;
+  controls.cropToggle.classList.remove("active");
+  cropBackup = null;
+  cropDrag = null;
+}
+
+function bindCropTool() {
+  controls.cropToggle.addEventListener("click", () => {
+    if (state.cropping) exitCrop(false);
+    else enterCrop();
+  });
+  controls.cropOverlay.addEventListener("pointerdown", startCropDrag);
+  controls.cropApply.addEventListener("click", () => exitCrop(true));
+  controls.cropCancel.addEventListener("click", () => exitCrop(false));
+  controls.cropReset.addEventListener("click", () => {
+    cropDraft = { x: 0, y: 0, w: 1, h: 1 };
+    positionCropBox();
+    cropLiveRender();
+  });
+  window.addEventListener("resize", () => {
+    if (state.cropping) positionCropBox();
+  });
+}
+
 function bindEvents() {
   document.addEventListener("input", (event) => {
+    // The gradient editor manages its own state and re-render.
+    if (event.target.closest("#gradientBlock")) return;
     if (event.target.matches("input[type='range'], select, input[type='checkbox'], input[type='color']")) {
       // While the clip plays, the canvas loop already reflects live settings.
       if (state.previewLoopActive) {
@@ -1056,6 +1581,10 @@ function bindEvents() {
 
 function init() {
   bindEvents();
+  bindGradientEditor();
+  bindPaste();
+  bindCropTool();
+  buildGradientUi();
   state.imageUrl = createDemoImage();
   loadImage(state.imageUrl);
 }

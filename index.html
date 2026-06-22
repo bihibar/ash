@@ -86,11 +86,31 @@
         <section class="source-panel" aria-label="Source preview">
           <div class="source-panel-header">
             <span>Source</span>
-            <small>Alpha-aware</small>
+            <div class="source-tools">
+              <button id="cropToggle" type="button" class="source-mini-btn">Crop</button>
+              <small>Alpha-aware</small>
+            </div>
           </div>
-          <div class="source-frame">
+          <div id="sourceFrame" class="source-frame">
             <img id="sourcePreview" alt="Loaded source preview" />
             <video id="sourceVideo" muted loop playsinline controls hidden></video>
+            <div id="cropOverlay" class="crop-overlay" hidden>
+              <div id="cropBox" class="crop-box">
+                <span class="crop-handle" data-h="nw"></span>
+                <span class="crop-handle" data-h="n"></span>
+                <span class="crop-handle" data-h="ne"></span>
+                <span class="crop-handle" data-h="e"></span>
+                <span class="crop-handle" data-h="se"></span>
+                <span class="crop-handle" data-h="s"></span>
+                <span class="crop-handle" data-h="sw"></span>
+                <span class="crop-handle" data-h="w"></span>
+              </div>
+            </div>
+          </div>
+          <div id="cropActions" class="crop-actions" hidden>
+            <button id="cropApply" type="button" class="primary-action">Apply</button>
+            <button id="cropReset" type="button">Reset</button>
+            <button id="cropCancel" type="button">Cancel</button>
           </div>
         </section>
 
@@ -196,6 +216,11 @@
             <output id="roundnessValue"></output>
           </div>
           <input id="roundness" type="range" min="0" max="100" value="14" />
+
+          <label class="check">
+            <input id="uniformSize" type="checkbox" />
+            Uniform mark size
+          </label>
         </details>
 
         <details class="control-group" open>
@@ -207,6 +232,30 @@
           <div class="color-row">
             <label for="paperColor">Background</label>
             <input id="paperColor" type="color" value="#09090b" />
+          </div>
+
+          <div id="gradientBlock" class="gradient-block">
+            <label class="check">
+              <input id="useGradient" type="checkbox" />
+              Gradient ink fill
+            </label>
+
+            <div id="gradientEditor" class="gradient-editor" hidden>
+              <div id="gradientBar" class="gradient-bar" title="Click to add a stop"></div>
+
+              <div class="gradient-angle-row">
+                <label for="gradientAngle">Angle</label>
+                <input id="gradientAngle" type="range" min="0" max="360" value="90" />
+                <output id="gradientAngleValue">90°</output>
+                <button id="gradientReverse" type="button" class="gradient-mini-btn" title="Reverse stops" aria-label="Reverse stops">⇄</button>
+              </div>
+
+              <div class="gradient-stops-head">
+                <span>Stops</span>
+                <button id="gradientAddStop" type="button" class="gradient-mini-btn" title="Add stop" aria-label="Add stop">+</button>
+              </div>
+              <div id="gradientStops" class="gradient-stops"></div>
+            </div>
           </div>
 
           <label class="check">
